@@ -1,3 +1,5 @@
+from flask_cors import CORS
+CORS(app)
 import zipfile
 import xml.etree.ElementTree as ET
 from flask import Flask, request, send_file, jsonify
