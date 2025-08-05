@@ -6,18 +6,57 @@ from flask_cors import CORS
 import tempfile
 import os
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 app = Flask(__name__)
 CORS(app)
 
 
+def remove_namespace(tag):
+    return tag.split('}')[-1] if '}' in tag else tag
+
+
+def gerar_svg(svg_paths):
+    """Monta o SVG final com cabeçalho e paths"""
+    svg_content = f"""<?xml version="1.0" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1">
+{''.join(svg_paths)}
+</svg>
+"""
+    return svg_content
+
+
+def processar_binario(filepath):
+    """Lê arquivos .studio3 binários (Silhouette v5+) e extrai comandos de path compatíveis"""
+    with open(filepath, "rb") as f:
+        data = f.read()
+
+    # Busca blocos que parecem comandos válidos SVG com letras e números
+    matches = re.findall(rb'([MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]{1,200})', data)
+
+    svg_paths = []
+    for m in matches:
+        try:
+            d = m.decode("utf-8", errors="ignore").strip()
+            # Validação extra: comandos válidos com números
+            if re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+                svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
+        except Exception:
+            continue
+
+    if not svg_paths:
+        raise ValueError("Não foi possível extrair formas do arquivo .studio3 (binário)")
+
+    return gerar_svg(svg_paths)
+
+
 def studio3_to_svg(studio3_path):
+    """Processa arquivos .studio3 (ZIP antigos ou binário v5+)"""
     try:
-        # Tentar abrir como ZIP (versões antigas)
         with zipfile.ZipFile(studio3_path, 'r') as z:
             xml_file = next((name for name in z.namelist() if name.endswith("document.xml")), None)
             if not xml_file:
-                raise ValueError("Arquivo .studio3 ZIP sem document.xml.")
+                raise ValueError("Arquivo .studio3 ZIP sem document.xml interno.")
 
             with z.open(xml_file) as f:
                 tree = ET.parse(f)
@@ -25,57 +64,20 @@ def studio3_to_svg(studio3_path):
 
             svg_paths = []
             for elem in root.iter():
-                tag = elem.tag.lower()
-                d = elem.attrib.get('d')
-                if d and any(cmd in d for cmd in "MLCQAZmlcqaz"):  # comandos válidos SVG
-                    svg_paths.append(f'<path d="{d}" fill="none" stroke="black" stroke-width="1"/>')
+                tag = remove_namespace(elem.tag).lower()
+                if 'path' in tag or 'polyline' in tag or 'line' in tag:
+                    d = elem.attrib.get('d')
+                    if d and re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+                        svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
 
             if not svg_paths:
-                raise ValueError("Nenhuma forma encontrada no document.xml.")
+                raise ValueError("Nenhum path encontrado no document.xml")
 
             return gerar_svg(svg_paths)
 
     except zipfile.BadZipFile:
-        # Arquivo binário (v5+)
+        # Tenta como arquivo binário
         return processar_binario(studio3_path)
-
-
-def processar_binario(filepath):
-    with open(filepath, "rb") as f:
-        data = f.read()
-
-    # Regex aprimorado: começa com comando SVG, segue por números, espaços, vírgulas e negativos
-    pattern = rb'([MmLlHhVvCcSsQqTtAaZz][0-9\.\,\-\s]{2,200})'
-    matches = re.findall(pattern, data)
-
-    svg_paths = []
-    for m in matches:
-        try:
-            d = m.decode("utf-8", errors="ignore").strip()
-            if re.match(r'^[MLCQAZmlcqaz][0-9\.\,\-\s]+$', d):  # valida estrutura
-                svg_paths.append(f'<path d="{d}" fill="none" stroke="black" stroke-width="1"/>')
-        except:
-            continue
-
-    if not svg_paths:
-        raise ValueError("Nenhum path SVG válido extraído do binário .studio3")
-
-    return gerar_svg(svg_paths)
-
-
-def gerar_svg(paths):
-    # Gerar SVG com header e viewBox compatível com CanvasWorkspace
-    svg = f'''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg
-    xmlns="http://www.w3.org/2000/svg"
-    version="1.1"
-    width="300mm"
-    height="300mm"
-    viewBox="0 0 300 300">
-    {"".join(paths)}
-</svg>
-'''
-    return svg
 
 
 @app.route('/convert', methods=['POST'])
@@ -85,7 +87,7 @@ def convert_file():
 
     file = request.files['file']
     if not file.filename.endswith(".studio3"):
-        return jsonify({"error": "Envie um arquivo .studio3"}), 400
+        return jsonify({"error": "Formato inválido, envie um arquivo .studio3"}), 400
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -105,13 +107,36 @@ def convert_file():
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        app.logger.error(f"Erro no servidor: {e}")
+        app.logger.error(f"Erro interno no servidor: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
+
+
+@app.route('/validate', methods=['POST'])
+def validate_svg():
+    if 'file' not in request.files:
+        return jsonify({"error": "Nenhum arquivo SVG enviado"}), 400
+
+    file = request.files['file']
+    if not file.filename.endswith(".svg"):
+        return jsonify({"error": "O arquivo deve ter extensão .svg"}), 400
+
+    try:
+        svg_content = file.read().decode("utf-8")
+
+        # Verificação mínima: presença das tags SVG e path
+        if "<svg" not in svg_content or "<path" not in svg_content:
+            return jsonify({"error": "O arquivo não parece conter conteúdo SVG válido"}), 400
+
+        return svg_content, 200, {'Content-Type': 'image/svg+xml'}
+
+    except Exception as e:
+        app.logger.error(f"Erro na validação do SVG: {e}")
+        return jsonify({"error": "Erro ao processar o arquivo SVG"}), 500
 
 
 @app.route('/', methods=['GET'])
 def home():
-    return "API .studio3 → SVG online (compatível com CanvasWorkspace)"
+    return "API de conversão .studio3 para .svg funcionando."
 
 
 if __name__ == '__main__':
