@@ -6,26 +6,35 @@ from flask_cors import CORS
 import tempfile
 import os
 from io import BytesIO
-from xml.sax.saxutils import escape  # Para escapar atributos XML
+from xml.sax.saxutils import escape
 
 app = Flask(__name__)
-CORS(app)  # Permite requisições de qualquer origem
+CORS(app)
 
 def remove_namespace(tag):
-    """Remove namespace XML (ex: {http://...}tag -> tag)"""
     return tag.split('}')[-1] if '}' in tag else tag
 
+def gerar_svg(svg_paths):
+    """Gera um SVG minimalista e compatível com CanvasWorkspace"""
+    return (
+        '<?xml version="1.0" standalone="no"?>\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" version="1.1">\n'
+        + ''.join(svg_paths) +
+        '\n</svg>'
+    )
+
+def validar_path_svg(d):
+    """Verifica se o atributo 'd' contém ao menos um comando SVG válido"""
+    if not re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+        return False
+    return len(re.findall(r'[MmLlHhVvCcSsQqTtAaZz]', d)) >= 1 and len(d) > 5
+
 def studio3_to_svg(studio3_path):
-    # Primeiro: tentar abrir como ZIP (arquivos antigos do Silhouette)
     try:
         with zipfile.ZipFile(studio3_path, 'r') as z:
-            xml_file = None
-            for name in z.namelist():
-                if name.endswith("document.xml"):
-                    xml_file = name
-                    break
+            xml_file = next((n for n in z.namelist() if n.endswith("document.xml")), None)
             if not xml_file:
-                raise ValueError("Arquivo .studio3 ZIP sem document.xml interno.")
+                raise ValueError("Arquivo ZIP não contém document.xml.")
 
             with z.open(xml_file) as f:
                 tree = ET.parse(f)
@@ -36,20 +45,18 @@ def studio3_to_svg(studio3_path):
                 tag = remove_namespace(elem.tag).lower()
                 if 'path' in tag or 'polyline' in tag or 'line' in tag:
                     d = elem.attrib.get('d')
-                    if d and re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+                    if d and validar_path_svg(d):
                         svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
 
             if not svg_paths:
-                raise ValueError("Nenhum path SVG encontrado no arquivo XML.")
+                raise ValueError("Nenhum path válido encontrado no XML.")
 
             return gerar_svg(svg_paths)
 
     except zipfile.BadZipFile:
-        # Não é ZIP → tratar como binário da versão 5
         return processar_binario(studio3_path)
 
 def processar_binario(filepath):
-    """Lê arquivos .studio3 binários (Silhouette v5+) e extrai comandos de path"""
     with open(filepath, "rb") as f:
         data = f.read()
 
@@ -59,25 +66,15 @@ def processar_binario(filepath):
     for m in matches:
         try:
             d = m.decode("utf-8", errors="ignore").strip()
-            # Validar comandos SVG
-            if re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+            if validar_path_svg(d):
                 svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
         except:
             continue
 
     if not svg_paths:
-        raise ValueError("Não foi possível extrair formas do arquivo .studio3")
+        raise ValueError("Nenhum path válido extraído do binário.")
 
     return gerar_svg(svg_paths)
-
-def gerar_svg(svg_paths):
-    """Monta o SVG final"""
-    svg_content = f"""<?xml version="1.0" standalone="no"?>
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1">
-{''.join(svg_paths)}
-</svg>
-"""
-    return svg_content
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -86,8 +83,7 @@ def convert_file():
 
     file = request.files['file']
     if not file.filename.endswith(".studio3"):
-        app.logger.warning(f"Arquivo inválido enviado: {file.filename}")
-        return jsonify({"error": "Formato inválido, envie um arquivo .studio3"}), 400
+        return jsonify({"error": "Formato inválido. Envie um arquivo .studio3"}), 400
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -107,7 +103,7 @@ def convert_file():
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        app.logger.error(f"Erro interno no servidor: {e}")
+        app.logger.error(f"Erro interno: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
 
 @app.route('/', methods=['GET'])
