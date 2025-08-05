@@ -11,7 +11,6 @@ from xml.sax.saxutils import escape
 app = Flask(__name__)
 CORS(app)
 
-# Número de parâmetros esperados por cada comando SVG
 SVG_COMMANDS_PARAMS = {
     'M': 2, 'L': 2, 'H': 1, 'V': 1,
     'C': 6, 'S': 4, 'Q': 4, 'T': 2,
@@ -73,52 +72,45 @@ def gerar_svg(svg_paths, width=210, height=297):
     svg_footer = "\n</g>\n</svg>"
     return svg_header + "\n".join(svg_paths) + svg_footer
 
-def processar_binario(filepath):
-    with open(filepath, "rb") as f:
-        raw = f.read()
-
-    ascii_data = ''.join(chr(b) if 32 <= b <= 126 else ' ' for b in raw)
-    pattern = re.compile(r'([MmLlHhVvCcSsQqTtAaZz][\d\s.,\-]{15,})')
-    matches = pattern.findall(ascii_data)
+def process_xml_svg(file_like):
+    tree = ET.parse(file_like)
+    root = tree.getroot()
 
     svg_paths = []
-    for d in matches:
-        d = d.strip()
-        if is_valid_path(d):
+    for elem in root.iter():
+        tag = remove_namespace(elem.tag).lower()
+        d = elem.attrib.get('d')
+        if d and is_valid_path(d):
             d_closed = auto_close_path(d)
             svg_paths.append(f'<path d="{escape(d_closed)}" />')
 
     if not svg_paths:
-        raise ValueError("Não foi possível extrair paths SVG válidos do arquivo binário.")
+        raise ValueError("Nenhum path válido encontrado no XML.")
 
     return gerar_svg(svg_paths)
 
-def studio3_to_svg(studio3_path):
+def studio_file_to_svg(filepath):
+    # Detecta arquivos binários (v5+)
+    with open(filepath, 'rb') as f:
+        header = f.read(4)
+        if not header.startswith(b'PK') and not header.strip().startswith(b'<'):
+            raise ValueError(
+                "Este arquivo .studio/.gsp é binário (v5+) e não pode ser convertido. "
+                "Salve como Studio v2 ou use GSP/XML."
+            )
+
     try:
-        with zipfile.ZipFile(studio3_path, 'r') as z:
-            xml_file = next((name for name in z.namelist() if name.endswith("document.xml")), None)
-            if not xml_file:
-                raise ValueError("Arquivo ZIP sem document.xml")
-
-            with z.open(xml_file) as f:
-                tree = ET.parse(f)
-                root = tree.getroot()
-
-            svg_paths = []
-            for elem in root.iter():
-                tag = remove_namespace(elem.tag).lower()
-                d = elem.attrib.get('d')
-                if d and is_valid_path(d):
-                    d_closed = auto_close_path(d)
-                    svg_paths.append(f'<path d="{escape(d_closed)}" />')
-
-            if not svg_paths:
-                raise ValueError("document.xml encontrado, mas sem paths válidos.")
-
-            return gerar_svg(svg_paths)
-
+        # Tenta como ZIP
+        with zipfile.ZipFile(filepath, 'r') as z:
+            for name in z.namelist():
+                if name.endswith(".xml") or "document" in name:
+                    with z.open(name) as f:
+                        return process_xml_svg(f)
+        raise ValueError("Arquivo ZIP sem XML reconhecível.")
     except zipfile.BadZipFile:
-        return processar_binario(studio3_path)
+        # Tenta como XML puro
+        with open(filepath, 'rb') as f:
+            return process_xml_svg(f)
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -126,13 +118,15 @@ def convert_file():
         return jsonify({"error": "Nenhum arquivo enviado"}), 400
 
     file = request.files['file']
-    if not file.filename.endswith(".studio3"):
-        return jsonify({"error": "Formato inválido, envie um arquivo .studio3"}), 400
+    filename = file.filename.lower()
+
+    if not filename.endswith(('.studio3', '.studio', '.gsp')):
+        return jsonify({"error": "Formato inválido. Envie um arquivo .studio3, .studio ou .gsp"}), 400
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             file.save(tmp.name)
-            svg_data = studio3_to_svg(tmp.name)
+            svg_data = studio_file_to_svg(tmp.name)
             os.unlink(tmp.name)
 
         output_name = os.path.splitext(file.filename)[0] + ".svg"
@@ -170,7 +164,7 @@ def validate_svg():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "API de conversão .studio3 para .svg funcionando."
+    return "API de conversão .studio/.gsp para .svg funcionando."
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
