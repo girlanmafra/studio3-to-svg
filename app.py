@@ -14,10 +14,27 @@ CORS(app)
 def remove_namespace(tag):
     return tag.split('}')[-1] if '}' in tag else tag
 
+def is_valid_path_d(d: str) -> bool:
+    """
+    Validação rigorosa para o atributo d de path SVG:
+    - Só aceita letras comandos SVG e números com separadores válidos
+    - Rejeita strings curtas ou com formatos inválidos
+    """
+    pattern = r'^[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+$'
+    if not re.match(pattern, d):
+        return False
+
+    # Extrai números para garantir que há pelo menos 2 coordenadas ou valores
+    numbers = re.findall(r'-?\d+\.?\d*', d)
+    if len(numbers) < 2:
+        return False
+
+    return True
+
 def gerar_svg(svg_paths):
     """
-    Monta o SVG final com cabeçalho, dimensões físicas (mm) e viewBox para CanvasWorkspace.
-    Ajuste a largura/altura e viewBox conforme necessidade.
+    Monta o SVG final com medidas em mm e viewBox compatível com CanvasWorkspace Brother.
+    Ajuste width, height e viewBox conforme seu uso real.
     """
     svg_content = f"""<?xml version="1.0" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg"
@@ -32,11 +49,10 @@ def gerar_svg(svg_paths):
     return svg_content
 
 def processar_binario(filepath):
-    """Extrai paths válidos de arquivos .studio3 binários (Silhouette v5+) com regex mais flexível e debug"""
+    """Extrai paths válidos do binário .studio3 (v5+), com validação rigorosa"""
     with open(filepath, "rb") as f:
         data = f.read()
 
-    # Regex para extrair comandos SVG: letra + números, vírgulas, espaços, sinais
     pattern = rb'([MmLlHhVvCcSsQqTtAaZz][0-9.,\-\s]+)'
     matches = re.findall(pattern, data)
 
@@ -44,18 +60,9 @@ def processar_binario(filepath):
     for m in matches:
         try:
             d = m.decode("utf-8", errors="ignore").strip()
-
-            # Inclui somente paths com pelo menos 2 números (evita inválidos)
-            if len(re.findall(r'\d+', d)) < 2:
-                continue
-
-            # Log para debug (remova em produção)
-            app.logger.debug(f"Path extraído (início): {d[:40]}...")
-
-            if re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+            if is_valid_path_d(d):
                 svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
-        except Exception as e:
-            app.logger.debug(f"Exceção ignorada ao extrair path: {e}")
+        except Exception:
             continue
 
     if not svg_paths:
@@ -80,9 +87,7 @@ def studio3_to_svg(studio3_path):
                 tag = remove_namespace(elem.tag).lower()
                 if 'path' in tag or 'polyline' in tag or 'line' in tag:
                     d = elem.attrib.get('d')
-                    if d and re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
-                        if len(re.findall(r'\d+', d)) < 2:
-                            continue
+                    if d and is_valid_path_d(d):
                         svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
 
             if not svg_paths:
@@ -91,31 +96,25 @@ def studio3_to_svg(studio3_path):
             return gerar_svg(svg_paths)
 
     except zipfile.BadZipFile:
-        # Se não for ZIP, tenta modo binário
         return processar_binario(studio3_path)
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
     if 'file' not in request.files:
-        app.logger.warning("Nenhum arquivo enviado.")
         return jsonify({"error": "Nenhum arquivo enviado"}), 400
 
     file = request.files['file']
-    app.logger.info(f"Arquivo recebido: {file.filename}")
 
     if not file.filename.endswith(".studio3"):
-        app.logger.warning("Formato inválido.")
         return jsonify({"error": "Formato inválido, envie um arquivo .studio3"}), 400
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             file.save(tmp.name)
-            app.logger.info(f"Arquivo salvo temporariamente em: {tmp.name}")
             svg_data = studio3_to_svg(tmp.name)
             os.unlink(tmp.name)
 
         output_name = os.path.splitext(file.filename)[0] + ".svg"
-        app.logger.info("Conversão bem-sucedida")
 
         return send_file(
             BytesIO(svg_data.encode('utf-8')),
@@ -125,10 +124,8 @@ def convert_file():
         )
 
     except ValueError as ve:
-        app.logger.error(f"Erro de valor: {ve}")
         return jsonify({"error": str(ve)}), 400
-    except Exception as e:
-        app.logger.exception("Erro interno no servidor")
+    except Exception:
         return jsonify({"error": "Erro interno no servidor"}), 500
 
 @app.route('/validate', methods=['POST'])
@@ -148,8 +145,7 @@ def validate_svg():
 
         return svg_content, 200, {'Content-Type': 'image/svg+xml'}
 
-    except Exception as e:
-        app.logger.error(f"Erro na validação do SVG: {e}")
+    except Exception:
         return jsonify({"error": "Erro ao processar o arquivo SVG"}), 500
 
 @app.route('/', methods=['GET'])
