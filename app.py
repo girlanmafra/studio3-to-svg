@@ -18,8 +18,10 @@ SVG_COMMANDS_PARAMS = {
     'A': 7, 'Z': 0
 }
 
+
 def remove_namespace(tag):
     return tag.split('}')[-1] if '}' in tag else tag
+
 
 def is_valid_path(d_attr):
     try:
@@ -45,6 +47,7 @@ def is_valid_path(d_attr):
     except Exception:
         return False
 
+
 def auto_close_path(d: str) -> str:
     coords = re.findall(r'[-+]?\d*\.?\d+', d)
     if len(coords) < 4:
@@ -58,6 +61,7 @@ def auto_close_path(d: str) -> str:
     except Exception:
         pass
     return d
+
 
 def gerar_svg(svg_paths, width=210, height=297):
     px_width = width * 3.7795
@@ -73,19 +77,22 @@ def gerar_svg(svg_paths, width=210, height=297):
     svg_footer = "\n</g>\n</svg>"
     return svg_header + "\n".join(svg_paths) + svg_footer
 
-def is_binary_studio_file(filepath):
+
+def detect_binary_format(filepath):
     try:
-        raw = open(filepath, 'rb').read(100 * 1024)
-        for enc in ('utf-8-sig', 'utf-16', 'latin-1'):
-            try:
-                decoded = raw.decode(enc)
-                if '<' in decoded and '>' in decoded:
-                    return False
-            except UnicodeDecodeError:
-                continue
+        with open(filepath, 'rb') as f:
+            header = f.read(128)
+
+        if header.startswith(b"GRAPHTEC PRT&CUT"):
+            return "GSP (Graphtec binário)"
+        if header.startswith(b"silhouette04;"):
+            return "Studio v2 (binário)"
+        if header.startswith(b"silhouette05;"):
+            return "Studio3 (v5+ binário)"
+        return None
     except Exception:
-        pass
-    return True
+        return "desconhecido"
+
 
 def process_xml_svg_bytes(content_bytes):
     svg_paths = []
@@ -105,13 +112,11 @@ def process_xml_svg_bytes(content_bytes):
     for elem in root.iter():
         tag = remove_namespace(elem.tag).lower()
 
-        # Verifica se tem atributo 'd'
         d = elem.attrib.get('d')
         if d and is_valid_path(d):
             d_closed = auto_close_path(d)
             svg_paths.append(f'<path d="{escape(d_closed)}" />')
 
-        # Verifica filhos do tipo <Path d="...">
         for child in elem:
             child_tag = remove_namespace(child.tag).lower()
             d2 = child.attrib.get('d')
@@ -124,10 +129,13 @@ def process_xml_svg_bytes(content_bytes):
 
     return gerar_svg(svg_paths)
 
+
 def studio_file_to_svg(filepath):
-    if is_binary_studio_file(filepath):
+    tipo_binario = detect_binary_format(filepath)
+    if tipo_binario:
         raise ValueError(
-            "Este arquivo parece ser binário (v5+). Salve como Studio v2 ou GSP/XML para converter."
+            f"⚠️ O arquivo parece estar em formato binário ({tipo_binario}).\n"
+            "Por favor, salve como Studio V2 XML, GSP XML ou utilize exportação SVG se disponível."
         )
 
     try:
@@ -140,6 +148,7 @@ def studio_file_to_svg(filepath):
     except zipfile.BadZipFile:
         with open(filepath, 'rb') as f:
             return process_xml_svg_bytes(f.read())
+
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -173,9 +182,11 @@ def convert_file():
         app.logger.error(f"Erro interno no servidor: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
 
+
 @app.route('/', methods=['GET'])
 def home():
     return "API de conversão .studio/.gsp para .svg funcionando."
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
