@@ -1,11 +1,13 @@
 import zipfile
 import xml.etree.ElementTree as ET
 from flask import Flask, request, send_file, jsonify
+from flask_cors import CORS  # Importa CORS
 import tempfile
 import os
 from io import BytesIO
 
 app = Flask(__name__)
+CORS(app)  # Habilita CORS para todas as origens
 
 def studio3_to_svg(studio3_path):
     # Abre o arquivo .studio3 como ZIP
