@@ -15,38 +15,47 @@ def remove_namespace(tag):
     return tag.split('}')[-1] if '}' in tag else tag
 
 def gerar_svg(svg_paths):
-    """Monta o SVG final com cabeçalho, dimensões físicas e paths"""
+    """
+    Monta o SVG final com cabeçalho, dimensões físicas (mm) e viewBox para CanvasWorkspace.
+    Ajuste a largura/altura e viewBox conforme necessidade.
+    """
     svg_content = f"""<?xml version="1.0" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg"
      version="1.1"
      width="100mm" height="100mm"
      viewBox="0 0 100 100"
-     xmlns:xlink="http://www.w3.org/1999/xlink">
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     >
 {''.join(svg_paths)}
 </svg>
 """
     return svg_content
 
 def processar_binario(filepath):
-    """Extrai paths válidos de arquivos .studio3 binários (Silhouette v5+)"""
+    """Extrai paths válidos de arquivos .studio3 binários (Silhouette v5+) com regex mais flexível e debug"""
     with open(filepath, "rb") as f:
         data = f.read()
 
-    # Regex mais segura para comandos SVG com coordenadas
-    pattern = rb'([MmLlHhVvCcSsQqTtAaZz][0-9.,\s\-]{5,300})'
+    # Regex para extrair comandos SVG: letra + números, vírgulas, espaços, sinais
+    pattern = rb'([MmLlHhVvCcSsQqTtAaZz][0-9.,\-\s]+)'
     matches = re.findall(pattern, data)
 
     svg_paths = []
     for m in matches:
         try:
             d = m.decode("utf-8", errors="ignore").strip()
-            if not re.search(r'\d', d):
-                continue
+
+            # Inclui somente paths com pelo menos 2 números (evita inválidos)
             if len(re.findall(r'\d+', d)) < 2:
                 continue
+
+            # Log para debug (remova em produção)
+            app.logger.debug(f"Path extraído (início): {d[:40]}...")
+
             if re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
                 svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
-        except Exception:
+        except Exception as e:
+            app.logger.debug(f"Exceção ignorada ao extrair path: {e}")
             continue
 
     if not svg_paths:
@@ -82,6 +91,7 @@ def studio3_to_svg(studio3_path):
             return gerar_svg(svg_paths)
 
     except zipfile.BadZipFile:
+        # Se não for ZIP, tenta modo binário
         return processar_binario(studio3_path)
 
 @app.route('/convert', methods=['POST'])
@@ -133,7 +143,6 @@ def validate_svg():
     try:
         svg_content = file.read().decode("utf-8")
 
-        # Verificação mínima
         if "<svg" not in svg_content or "<path" not in svg_content:
             return jsonify({"error": "O arquivo não parece conter conteúdo SVG válido"}), 400
 
