@@ -11,43 +11,39 @@ from xml.sax.saxutils import escape
 app = Flask(__name__)
 CORS(app)
 
-# SVG path commands and expected parameter counts
+# Número de parâmetros esperados por cada comando SVG
 SVG_COMMANDS_PARAMS = {
     'M': 2, 'L': 2, 'H': 1, 'V': 1,
     'C': 6, 'S': 4, 'Q': 4, 'T': 2,
     'A': 7, 'Z': 0
 }
 
-
 def remove_namespace(tag):
     return tag.split('}')[-1] if '}' in tag else tag
 
-
 def is_valid_path(d_attr):
-    tokens = re.findall(r'([MmLlHhVvCcSsQqTtAaZz])|(-?\d+(?:\.\d+)?)', d_attr)
-    if not tokens:
-        return False
-
-    cmd = None
-    args = []
-    expected = 0
-
-    for t in tokens:
-        if t[0]:  # command letter
-            if cmd and expected and len(args) % expected != 0:
+    try:
+        tokens = re.findall(r'[A-Za-z]|[-+]?\d*\.?\d+', d_attr)
+        i = 0
+        while i < len(tokens):
+            cmd = tokens[i]
+            if not re.match(r'[MmLlHhVvCcSsQqTtAaZz]', cmd):
                 return False
-            cmd = t[0].upper()
-            expected = SVG_COMMANDS_PARAMS.get(cmd, None)
-            if expected is None:
+            i += 1
+            required = SVG_COMMANDS_PARAMS.get(cmd.upper(), None)
+            if required is None:
                 return False
-            args = []
-        elif t[1]:  # number
-            args.append(float(t[1]))
-
-    if expected and len(args) % expected != 0:
+            param_count = 0
+            while i < len(tokens) and not re.match(r'[A-Za-z]', tokens[i]):
+                param_count += 1
+                i += 1
+            if required == 0:
+                continue
+            if param_count < required or param_count % required != 0:
+                return False
+        return True
+    except Exception:
         return False
-    return True
-
 
 def auto_close_path(d: str) -> str:
     coords = re.findall(r'[-+]?\d*\.?\d+', d)
@@ -63,9 +59,7 @@ def auto_close_path(d: str) -> str:
         pass
     return d
 
-
 def gerar_svg(svg_paths, width=210, height=297):
-    """Creates an SVG with mm dimensions and a viewBox in px"""
     px_width = width * 3.7795
     px_height = height * 3.7795
     svg_header = f"""<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -79,14 +73,12 @@ def gerar_svg(svg_paths, width=210, height=297):
     svg_footer = "\n</g>\n</svg>"
     return svg_header + "\n".join(svg_paths) + svg_footer
 
-
 def processar_binario(filepath):
-    """Processes binary .studio3 files (Silhouette v5+)"""
     with open(filepath, "rb") as f:
         raw = f.read()
 
     ascii_data = ''.join(chr(b) if 32 <= b <= 126 else ' ' for b in raw)
-    pattern = re.compile(r'([MmLlHhVvCcSsQqTtAaZz][0-9.,\s\-]{10,})')
+    pattern = re.compile(r'([MmLlHhVvCcSsQqTtAaZz][\d\s.,\-]{15,})')
     matches = pattern.findall(ascii_data)
 
     svg_paths = []
@@ -101,9 +93,7 @@ def processar_binario(filepath):
 
     return gerar_svg(svg_paths)
 
-
 def studio3_to_svg(studio3_path):
-    """Processes .studio3 files (ZIP/XML or binary)"""
     try:
         with zipfile.ZipFile(studio3_path, 'r') as z:
             xml_file = next((name for name in z.namelist() if name.endswith("document.xml")), None)
@@ -129,7 +119,6 @@ def studio3_to_svg(studio3_path):
 
     except zipfile.BadZipFile:
         return processar_binario(studio3_path)
-
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -161,7 +150,6 @@ def convert_file():
         app.logger.error(f"Erro interno no servidor: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
 
-
 @app.route('/validate', methods=['POST'])
 def validate_svg():
     if 'file' not in request.files:
@@ -173,21 +161,16 @@ def validate_svg():
 
     try:
         svg_content = file.read().decode("utf-8")
-
         if "<svg" not in svg_content or "<path" not in svg_content:
             return jsonify({"error": "O arquivo não contém dados SVG visíveis"}), 400
-
         return svg_content, 200, {'Content-Type': 'image/svg+xml'}
-
     except Exception as e:
         app.logger.error(f"Erro na validação do SVG: {e}")
         return jsonify({"error": "Erro ao processar o arquivo SVG"}), 500
 
-
 @app.route('/', methods=['GET'])
 def home():
     return "API de conversão .studio3 para .svg funcionando."
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
