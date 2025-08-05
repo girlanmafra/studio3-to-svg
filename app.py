@@ -1,18 +1,17 @@
-from flask_cors import CORS
-CORS(app)
 import zipfile
 import xml.etree.ElementTree as ET
 from flask import Flask, request, send_file, jsonify
+from flask_cors import CORS
 import tempfile
 import os
 from io import BytesIO
 
 app = Flask(__name__)
+CORS(app)  # agora está depois da criação do app
 
 def studio3_to_svg(studio3_path):
     try:
         with zipfile.ZipFile(studio3_path, 'r') as z:
-            # Procura arquivo document.xml dentro do ZIP
             xml_file = None
             for name in z.namelist():
                 if name.endswith("document.xml"):
@@ -33,12 +32,11 @@ def studio3_to_svg(studio3_path):
         app.logger.error(f"Erro inesperado ao abrir .studio3: {e}")
         raise
 
-    # Extrai elementos path, polyline e line
     svg_paths = []
     for elem in root.iter():
         tag = elem.tag.lower()
         if 'path' in tag or 'polyline' in tag or 'line' in tag:
-            d = elem.attrib.get('d')  # atributo path SVG
+            d = elem.attrib.get('d')
             if d:
                 svg_paths.append(f'<path d="{d}" fill="none" stroke="black" stroke-width="1"/>')
 
@@ -63,7 +61,7 @@ def convert_file():
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             file.save(tmp.name)
             svg_data = studio3_to_svg(tmp.name)
-            os.unlink(tmp.name)  # apaga arquivo temporário
+            os.unlink(tmp.name)
 
         output_name = os.path.splitext(file.filename)[0] + ".svg"
 
@@ -75,7 +73,6 @@ def convert_file():
         )
 
     except ValueError as ve:
-        # Erro controlado
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
         app.logger.error(f"Erro interno no servidor: {e}")
