@@ -89,18 +89,25 @@ def process_xml_svg(file_like):
 
     return gerar_svg(svg_paths)
 
+def is_binary_studio_file(filepath):
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(2048)
+            text = data.decode('utf-8', errors='ignore')
+            if "<" not in text:
+                return True
+        return False
+    except Exception:
+        return True
+
 def studio_file_to_svg(filepath):
-    # Detecta arquivos binários (v5+)
-    with open(filepath, 'rb') as f:
-        header = f.read(4)
-        if not header.startswith(b'PK') and not header.strip().startswith(b'<'):
-            raise ValueError(
-                "Este arquivo .studio/.gsp é binário (v5+) e não pode ser convertido. "
-                "Salve como Studio v2 ou use GSP/XML."
-            )
+    if is_binary_studio_file(filepath):
+        raise ValueError(
+            "Este arquivo .studio/.gsp parece ser binário (v5+). "
+            "Salve como Studio v2 ou GSP/XML."
+        )
 
     try:
-        # Tenta como ZIP
         with zipfile.ZipFile(filepath, 'r') as z:
             for name in z.namelist():
                 if name.endswith(".xml") or "document" in name:
@@ -108,7 +115,6 @@ def studio_file_to_svg(filepath):
                         return process_xml_svg(f)
         raise ValueError("Arquivo ZIP sem XML reconhecível.")
     except zipfile.BadZipFile:
-        # Tenta como XML puro
         with open(filepath, 'rb') as f:
             return process_xml_svg(f)
 
