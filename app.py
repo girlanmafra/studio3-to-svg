@@ -7,71 +7,68 @@ import tempfile
 import os
 from io import BytesIO
 from xml.sax.saxutils import escape
+from svg.path import parse_path, Path
+from svg.path.util import get_size
 
 app = Flask(__name__)
+# Permitir requisições de qualquer origem (necessário para o front-end em outro domínio)
 CORS(app)
 
 def remove_namespace(tag):
+    """
+    Remove o namespace do elemento XML.
+    """
     return tag.split('}')[-1] if '}' in tag else tag
 
-def is_valid_path_d(d: str) -> bool:
+def calcular_viewbox(svg_paths):
     """
-    Validação rigorosa para o atributo d de path SVG:
-    - Só aceita letras comandos SVG e números com separadores válidos
-    - Rejeita strings curtas ou com formatos inválidos
+    Calcula dinamicamente a viewBox e as dimensões do SVG com base
+    nas coordenadas de todos os caminhos.
     """
-    pattern = r'^[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+$'
-    if not re.match(pattern, d):
-        return False
+    all_paths = [parse_path(p.split('d="')[1].split('"')[0]) for p in svg_paths]
+    
+    if not all_paths:
+        return 0, 0, 100, 100 # Default fallback
 
-    # Extrai números para garantir que há pelo menos 2 coordenadas ou valores
-    numbers = re.findall(r'-?\d+\.?\d*', d)
-    if len(numbers) < 2:
-        return False
+    # Use a biblioteca svg.path para calcular o bounding box
+    min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
 
-    return True
+    for p in all_paths:
+        try:
+            size_min_x, size_min_y, size_max_x, size_max_y = get_size(p)
+            min_x = min(min_x, size_min_x)
+            min_y = min(min_y, size_min_y)
+            max_x = max(max_x, size_max_x)
+            max_y = max(max_y, size_max_y)
+        except Exception:
+            continue
+
+    width = max_x - min_x
+    height = max_y - min_y
+
+    return min_x, min_y, width, height
 
 def gerar_svg(svg_paths):
     """
-    Monta o SVG final com medidas em mm e viewBox compatível com CanvasWorkspace Brother.
-    Ajuste width, height e viewBox conforme seu uso real.
+    Monta o SVG final com medidas dinâmicas.
     """
-    svg_content = f"""<?xml version="1.0" standalone="no"?>
+    min_x, min_y, width, height = calcular_viewbox(svg_paths)
+
+    svg_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg"
      version="1.1"
-     width="100mm" height="100mm"
-     viewBox="0 0 100 100"
-     xmlns:xlink="http://www.w3.org/1999/xlink"
-     >
+     width="{width:.2f}mm" height="{height:.2f}mm"
+     viewBox="{min_x:.2f} {min_y:.2f} {width:.2f} {height:.2f}"
+     xmlns:xlink="http://www.w3.org/1999/xlink">
 {''.join(svg_paths)}
 </svg>
 """
     return svg_content
 
-def processar_binario(filepath):
-    """Extrai paths válidos do binário .studio3 (v5+), com validação rigorosa"""
-    with open(filepath, "rb") as f:
-        data = f.read()
-
-    pattern = rb'([MmLlHhVvCcSsQqTtAaZz][0-9.,\-\s]+)'
-    matches = re.findall(pattern, data)
-
-    svg_paths = []
-    for m in matches:
-        try:
-            d = m.decode("utf-8", errors="ignore").strip()
-            if is_valid_path_d(d):
-                svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
-        except Exception:
-            continue
-
-    if not svg_paths:
-        raise ValueError("Não foi possível extrair caminhos válidos do arquivo .studio3 binário")
-
-    return gerar_svg(svg_paths)
-
 def studio3_to_svg(studio3_path):
-    """Processa arquivos .studio3 (ZIP antigos ou binário v5+)"""
+    """
+    Processa arquivos .studio3 no formato ZIP.
+    """
     try:
         with zipfile.ZipFile(studio3_path, 'r') as z:
             xml_file = next((name for name in z.namelist() if name.endswith("document.xml")), None)
@@ -85,10 +82,23 @@ def studio3_to_svg(studio3_path):
             svg_paths = []
             for elem in root.iter():
                 tag = remove_namespace(elem.tag).lower()
-                if 'path' in tag or 'polyline' in tag or 'line' in tag:
+                if tag == 'path':
                     d = elem.attrib.get('d')
-                    if d and is_valid_path_d(d):
+                    if d:
                         svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
+                elif tag == 'polyline':
+                    points = elem.attrib.get('points')
+                    if points:
+                        # Converte polyline points para o atributo 'd' do path
+                        path_d = 'M' + points.replace(' ', ' L')
+                        svg_paths.append(f'<path d="{escape(path_d)}" fill="none" stroke="black" stroke-width="1"/>')
+                elif tag == 'line':
+                    x1 = elem.attrib.get('x1', '0')
+                    y1 = elem.attrib.get('y1', '0')
+                    x2 = elem.attrib.get('x2', '0')
+                    y2 = elem.attrib.get('y2', '0')
+                    path_d = f'M{x1} {y1} L{x2} {y2}'
+                    svg_paths.append(f'<path d="{escape(path_d)}" fill="none" stroke="black" stroke-width="1"/>')
 
             if not svg_paths:
                 raise ValueError("Nenhum path válido encontrado no document.xml")
@@ -96,7 +106,7 @@ def studio3_to_svg(studio3_path):
             return gerar_svg(svg_paths)
 
     except zipfile.BadZipFile:
-        return processar_binario(studio3_path)
+        raise ValueError("O arquivo não é um formato ZIP válido. Pode ser um arquivo .studio3 V5+ (binário) que não é suportado por este conversor.")
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -125,32 +135,13 @@ def convert_file():
 
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
-    except Exception:
-        return jsonify({"error": "Erro interno no servidor"}), 500
-
-@app.route('/validate', methods=['POST'])
-def validate_svg():
-    if 'file' not in request.files:
-        return jsonify({"error": "Nenhum arquivo SVG enviado"}), 400
-
-    file = request.files['file']
-    if not file.filename.endswith(".svg"):
-        return jsonify({"error": "O arquivo deve ter extensão .svg"}), 400
-
-    try:
-        svg_content = file.read().decode("utf-8")
-
-        if "<svg" not in svg_content or "<path" not in svg_content:
-            return jsonify({"error": "O arquivo não parece conter conteúdo SVG válido"}), 400
-
-        return svg_content, 200, {'Content-Type': 'image/svg+xml'}
-
-    except Exception:
-        return jsonify({"error": "Erro ao processar o arquivo SVG"}), 500
+    except Exception as e:
+        return jsonify({"error": f"Erro interno no servidor: {str(e)}"}), 500
 
 @app.route('/', methods=['GET'])
 def home():
-    return "API de conversão .studio3 para .svg funcionando."
+    # Mensagem de status simples para confirmar que a API está funcionando
+    return jsonify({"status": "API de conversão .studio3 para .svg funcionando."})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
