@@ -72,33 +72,38 @@ def gerar_svg(svg_paths, width=210, height=297):
     svg_footer = "\n</g>\n</svg>"
     return svg_header + "\n".join(svg_paths) + svg_footer
 
-def process_xml_svg(file_like):
-    tree = ET.parse(file_like)
-    root = tree.getroot()
-
-    svg_paths = []
-    for elem in root.iter():
-        tag = remove_namespace(elem.tag).lower()
-        d = elem.attrib.get('d')
-        if d and is_valid_path(d):
-            d_closed = auto_close_path(d)
-            svg_paths.append(f'<path d="{escape(d_closed)}" />')
-
-    if not svg_paths:
-        raise ValueError("Nenhum path válido encontrado no XML.")
-
-    return gerar_svg(svg_paths)
-
 def is_binary_studio_file(filepath):
     try:
         with open(filepath, 'rb') as f:
             data = f.read(2048)
-            text = data.decode('utf-8', errors='ignore')
-            if "<" not in text:
-                return True
-        return False
+            if b'<Design' in data or b'<?xml' in data:
+                return False
+        return True
     except Exception:
         return True
+
+def process_xml_svg(file_like):
+    try:
+        tree = ET.parse(file_like)
+        root = tree.getroot()
+
+        svg_paths = []
+        for elem in root.iter():
+            tag = remove_namespace(elem.tag).lower()
+            d = elem.attrib.get('d')
+            if d and is_valid_path(d):
+                d_closed = auto_close_path(d)
+                svg_paths.append(f'<path d="{escape(d_closed)}" />')
+
+        if not svg_paths:
+            raise ValueError("Nenhum path válido encontrado no XML.")
+
+        return gerar_svg(svg_paths)
+
+    except ET.ParseError:
+        raise ValueError("O arquivo XML não pôde ser lido. Verifique se é um arquivo .studio v2 ou .gsp válido.")
+    except Exception as e:
+        raise ValueError(f"Erro inesperado ao processar o XML: {str(e)}")
 
 def studio_file_to_svg(filepath):
     if is_binary_studio_file(filepath):
