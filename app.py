@@ -5,7 +5,7 @@ from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import tempfile
 import os
-from io import BytesIO, StringIO
+from io import BytesIO
 
 from xml.sax.saxutils import escape
 
@@ -80,7 +80,7 @@ def is_binary_studio_file(filepath):
             try:
                 decoded = raw.decode(enc)
                 if '<' in decoded and '>' in decoded:
-                    return False  # conteúdo legível com XML provável
+                    return False
             except UnicodeDecodeError:
                 continue
     except Exception:
@@ -88,26 +88,36 @@ def is_binary_studio_file(filepath):
     return True
 
 def process_xml_svg_bytes(content_bytes):
+    svg_paths = []
     root = None
+
     for enc in ('utf-8-sig', 'utf-16', 'latin-1'):
         try:
             decoded = content_bytes.decode(enc)
-            tree = ET.parse(StringIO(decoded))
-            root = tree.getroot()
+            root = ET.fromstring(decoded)
             break
         except Exception:
             continue
 
     if root is None:
-        raise ValueError("Falha ao processar o arquivo XML. Verifique se o arquivo é válido e legível.")
+        raise ValueError("Falha ao processar o arquivo XML. Verifique se o arquivo é válido.")
 
-    svg_paths = []
     for elem in root.iter():
         tag = remove_namespace(elem.tag).lower()
+
+        # Verifica se tem atributo 'd'
         d = elem.attrib.get('d')
         if d and is_valid_path(d):
             d_closed = auto_close_path(d)
             svg_paths.append(f'<path d="{escape(d_closed)}" />')
+
+        # Verifica filhos do tipo <Path d="...">
+        for child in elem:
+            child_tag = remove_namespace(child.tag).lower()
+            d2 = child.attrib.get('d')
+            if d2 and is_valid_path(d2):
+                d_closed = auto_close_path(d2)
+                svg_paths.append(f'<path d="{escape(d_closed)}" />')
 
     if not svg_paths:
         raise ValueError("Nenhum path válido encontrado no XML.")
@@ -162,24 +172,6 @@ def convert_file():
     except Exception as e:
         app.logger.error(f"Erro interno no servidor: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
-
-@app.route('/validate', methods=['POST'])
-def validate_svg():
-    if 'file' not in request.files:
-        return jsonify({"error": "Nenhum arquivo SVG enviado"}), 400
-
-    file = request.files['file']
-    if not file.filename.endswith(".svg"):
-        return jsonify({"error": "O arquivo deve ter extensão .svg"}), 400
-
-    try:
-        svg_content = file.read().decode("utf-8")
-        if "<svg" not in svg_content or "<path" not in svg_content:
-            return jsonify({"error": "O arquivo não contém dados SVG visíveis"}), 400
-        return svg_content, 200, {'Content-Type': 'image/svg+xml'}
-    except Exception as e:
-        app.logger.error(f"Erro na validação do SVG: {e}")
-        return jsonify({"error": "Erro ao processar o arquivo SVG"}), 500
 
 @app.route('/', methods=['GET'])
 def home():
