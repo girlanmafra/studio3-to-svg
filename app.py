@@ -7,7 +7,9 @@ import os
 from io import BytesIO
 
 app = Flask(__name__)
-CORS(app)  # agora está depois da criação do app
+
+# Habilita CORS para todas as rotas, métodos e headers
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 def studio3_to_svg(studio3_path):
     try:
