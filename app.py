@@ -6,10 +6,14 @@ from flask_cors import CORS
 import tempfile
 import os
 from io import BytesIO
-from xml.sax.saxutils import escape  # <-- Import para escape de XML
+from xml.sax.saxutils import escape  # Para escapar atributos XML
 
 app = Flask(__name__)
 CORS(app)  # Permite requisições de qualquer origem
+
+def remove_namespace(tag):
+    """Remove namespace XML (ex: {http://...}tag -> tag)"""
+    return tag.split('}')[-1] if '}' in tag else tag
 
 def studio3_to_svg(studio3_path):
     # Primeiro: tentar abrir como ZIP (arquivos antigos do Silhouette)
@@ -29,12 +33,14 @@ def studio3_to_svg(studio3_path):
 
             svg_paths = []
             for elem in root.iter():
-                tag = elem.tag.lower()
+                tag = remove_namespace(elem.tag).lower()
                 if 'path' in tag or 'polyline' in tag or 'line' in tag:
                     d = elem.attrib.get('d')
-                    if d:
-                        d_escaped = escape(d)  # <-- Escapando caracteres especiais
-                        svg_paths.append(f'<path d="{d_escaped}" fill="none" stroke="black" stroke-width="1"/>')
+                    if d and re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+                        svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
+
+            if not svg_paths:
+                raise ValueError("Nenhum path SVG encontrado no arquivo XML.")
 
             return gerar_svg(svg_paths)
 
@@ -42,30 +48,27 @@ def studio3_to_svg(studio3_path):
         # Não é ZIP → tratar como binário da versão 5
         return processar_binario(studio3_path)
 
-
 def processar_binario(filepath):
     """Lê arquivos .studio3 binários (Silhouette v5+) e extrai comandos de path"""
     with open(filepath, "rb") as f:
         data = f.read()
 
-    # Regex para capturar comandos SVG no binário
     matches = re.findall(rb'[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]{1,200}', data)
 
     svg_paths = []
     for m in matches:
         try:
             d = m.decode("utf-8", errors="ignore").strip()
-            if len(d) > 2:
-                d_escaped = escape(d)  # <-- Escapando caracteres especiais
-                svg_paths.append(f'<path d="{d_escaped}" fill="none" stroke="black" stroke-width="1"/>')
+            # Validar comandos SVG
+            if re.fullmatch(r'[MmLlHhVvCcSsQqTtAaZz0-9.,\s\-]+', d):
+                svg_paths.append(f'<path d="{escape(d)}" fill="none" stroke="black" stroke-width="1"/>')
         except:
-            pass
+            continue
 
     if not svg_paths:
         raise ValueError("Não foi possível extrair formas do arquivo .studio3")
 
     return gerar_svg(svg_paths)
-
 
 def gerar_svg(svg_paths):
     """Monta o SVG final"""
@@ -75,7 +78,6 @@ def gerar_svg(svg_paths):
 </svg>
 """
     return svg_content
-
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
@@ -108,11 +110,9 @@ def convert_file():
         app.logger.error(f"Erro interno no servidor: {e}")
         return jsonify({"error": "Erro interno no servidor"}), 500
 
-
 @app.route('/', methods=['GET'])
 def home():
     return "API de conversão .studio3 para .svg funcionando."
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
