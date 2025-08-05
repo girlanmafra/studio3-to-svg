@@ -5,7 +5,8 @@ from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import tempfile
 import os
-from io import BytesIO
+from io import BytesIO, StringIO
+
 from xml.sax.saxutils import escape
 
 app = Flask(__name__)
@@ -75,15 +76,11 @@ def gerar_svg(svg_paths, width=210, height=297):
 def is_binary_studio_file(filepath):
     try:
         raw = open(filepath, 'rb').read(100 * 1024)
-        for enc in ('utf-8', 'utf-16', 'latin-1'):
+        for enc in ('utf-8-sig', 'utf-16', 'latin-1'):
             try:
                 decoded = raw.decode(enc)
                 if '<' in decoded and '>' in decoded:
-                    try:
-                        ET.fromstring(decoded)
-                        return False
-                    except ET.ParseError:
-                        return False  # XML malformado, mas não binário
+                    return False  # conteúdo legível com XML provável
             except UnicodeDecodeError:
                 continue
     except Exception:
@@ -92,15 +89,17 @@ def is_binary_studio_file(filepath):
 
 def process_xml_svg_bytes(content_bytes):
     root = None
-    for enc in ('utf-8', 'utf-16', 'latin-1'):
+    for enc in ('utf-8-sig', 'utf-16', 'latin-1'):
         try:
             decoded = content_bytes.decode(enc)
-            root = ET.fromstring(decoded)
+            tree = ET.parse(StringIO(decoded))
+            root = tree.getroot()
             break
         except Exception:
             continue
+
     if root is None:
-        raise ValueError("Falha ao processar o arquivo XML. Verifique se o arquivo é válido.")
+        raise ValueError("Falha ao processar o arquivo XML. Verifique se o arquivo é válido e legível.")
 
     svg_paths = []
     for elem in root.iter():
