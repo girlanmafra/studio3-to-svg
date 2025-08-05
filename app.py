@@ -6,6 +6,7 @@ from flask_cors import CORS
 import tempfile
 import os
 from io import BytesIO
+from xml.sax.saxutils import escape  # <-- Import para escape de XML
 
 app = Flask(__name__)
 CORS(app)  # Permite requisições de qualquer origem
@@ -32,7 +33,8 @@ def studio3_to_svg(studio3_path):
                 if 'path' in tag or 'polyline' in tag or 'line' in tag:
                     d = elem.attrib.get('d')
                     if d:
-                        svg_paths.append(f'<path d="{d}" fill="none" stroke="black" stroke-width="1"/>')
+                        d_escaped = escape(d)  # <-- Escapando caracteres especiais
+                        svg_paths.append(f'<path d="{d_escaped}" fill="none" stroke="black" stroke-width="1"/>')
 
             return gerar_svg(svg_paths)
 
@@ -54,7 +56,8 @@ def processar_binario(filepath):
         try:
             d = m.decode("utf-8", errors="ignore").strip()
             if len(d) > 2:
-                svg_paths.append(f'<path d="{d}" fill="none" stroke="black" stroke-width="1"/>')
+                d_escaped = escape(d)  # <-- Escapando caracteres especiais
+                svg_paths.append(f'<path d="{d_escaped}" fill="none" stroke="black" stroke-width="1"/>')
         except:
             pass
 
