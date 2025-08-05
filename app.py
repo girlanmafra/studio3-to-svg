@@ -1,15 +1,13 @@
-import zipfile
-import xml.etree.ElementTree as ET
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
+import zipfile
+import xml.etree.ElementTree as ET
 import tempfile
 import os
 from io import BytesIO
 
 app = Flask(__name__)
-
-# Habilita CORS para todas as rotas, métodos e headers
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": "*"}})  # libera CORS para qualquer origem
 
 def studio3_to_svg(studio3_path):
     try:
@@ -20,7 +18,6 @@ def studio3_to_svg(studio3_path):
                     xml_file = name
                     break
             if not xml_file:
-                app.logger.error("Arquivo .studio3 sem document.xml interno.")
                 raise ValueError("Arquivo .studio3 inválido ou corrompido.")
 
             with z.open(xml_file) as f:
@@ -28,10 +25,8 @@ def studio3_to_svg(studio3_path):
                 root = tree.getroot()
 
     except zipfile.BadZipFile:
-        app.logger.error(f"Erro: arquivo .studio3 inválido ou não é zip: {studio3_path}")
         raise ValueError("Arquivo .studio3 inválido ou corrompido.")
     except Exception as e:
-        app.logger.error(f"Erro inesperado ao abrir .studio3: {e}")
         raise
 
     svg_paths = []
@@ -56,7 +51,6 @@ def convert_file():
 
     file = request.files['file']
     if not file.filename.endswith(".studio3"):
-        app.logger.warning(f"Arquivo inválido enviado: {file.filename}")
         return jsonify({"error": "Formato inválido, envie um arquivo .studio3"}), 400
 
     try:
