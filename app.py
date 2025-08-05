@@ -73,59 +73,64 @@ def gerar_svg(svg_paths, width=210, height=297):
     return svg_header + "\n".join(svg_paths) + svg_footer
 
 def is_binary_studio_file(filepath):
-    """Tenta detectar se o arquivo é XML parseável (ou seja, não binário)"""
     try:
-        with open(filepath, 'rb') as f:
-            raw = f.read()
-        content = raw.decode('utf-8', errors='ignore')
-
-        # Tenta parsear como XML
-        ET.fromstring(content)
-        return False
+        raw = open(filepath, 'rb').read(100 * 1024)
+        for enc in ('utf-8', 'utf-16', 'latin-1'):
+            try:
+                decoded = raw.decode(enc)
+                if '<' in decoded and '>' in decoded:
+                    try:
+                        ET.fromstring(decoded)
+                        return False
+                    except ET.ParseError:
+                        return False  # XML malformado, mas não binário
+            except UnicodeDecodeError:
+                continue
     except Exception:
-        return True
+        pass
+    return True
 
-def process_xml_svg(file_like):
-    try:
-        tree = ET.parse(file_like)
-        root = tree.getroot()
+def process_xml_svg_bytes(content_bytes):
+    root = None
+    for enc in ('utf-8', 'utf-16', 'latin-1'):
+        try:
+            decoded = content_bytes.decode(enc)
+            root = ET.fromstring(decoded)
+            break
+        except Exception:
+            continue
+    if root is None:
+        raise ValueError("Falha ao processar o arquivo XML. Verifique se o arquivo é válido.")
 
-        svg_paths = []
-        for elem in root.iter():
-            tag = remove_namespace(elem.tag).lower()
-            d = elem.attrib.get('d')
-            if d and is_valid_path(d):
-                d_closed = auto_close_path(d)
-                svg_paths.append(f'<path d="{escape(d_closed)}" />')
+    svg_paths = []
+    for elem in root.iter():
+        tag = remove_namespace(elem.tag).lower()
+        d = elem.attrib.get('d')
+        if d and is_valid_path(d):
+            d_closed = auto_close_path(d)
+            svg_paths.append(f'<path d="{escape(d_closed)}" />')
 
-        if not svg_paths:
-            raise ValueError("Nenhum path válido encontrado no XML.")
+    if not svg_paths:
+        raise ValueError("Nenhum path válido encontrado no XML.")
 
-        return gerar_svg(svg_paths)
-
-    except ET.ParseError:
-        raise ValueError("O arquivo XML não pôde ser lido. Verifique se foi salvo como Studio v2 ou GSP/XML.")
-    except Exception as e:
-        raise ValueError(f"Erro inesperado ao processar o XML: {str(e)}")
+    return gerar_svg(svg_paths)
 
 def studio_file_to_svg(filepath):
     if is_binary_studio_file(filepath):
         raise ValueError(
-            "Este arquivo parece ser binário (v5+). Salve como Studio v2 ou GSP/XML para compatibilidade com a conversão."
+            "Este arquivo parece ser binário (v5+). Salve como Studio v2 ou GSP/XML para converter."
         )
 
     try:
-        # Tenta como ZIP (Studio3 XML zipado)
         with zipfile.ZipFile(filepath, 'r') as z:
             for name in z.namelist():
                 if name.endswith(".xml") or "document" in name:
                     with z.open(name) as f:
-                        return process_xml_svg(f)
+                        return process_xml_svg_bytes(f.read())
         raise ValueError("Arquivo ZIP sem XML reconhecível.")
     except zipfile.BadZipFile:
-        # Tenta como XML puro (.studio v2 ou .gsp)
         with open(filepath, 'rb') as f:
-            return process_xml_svg(f)
+            return process_xml_svg_bytes(f.read())
 
 @app.route('/convert', methods=['POST'])
 def convert_file():
